@@ -1,40 +1,61 @@
 #!/bin/bash
 
-# Define the primary network interface connected to the router
-primary_iface="enp1s0"
+# Prompt for OVS setup
+read -p "Do you want to install and configure Open vSwitch? (y/n): " install_ovs
 
-# Read the list of additional interfaces from the user
-echo "Enter the additional interface names (separated by spaces):"
-read -r additional_ifaces
+if [[ $install_ovs == "y" ]]; then
+  # Prompt for Ethernet ports
+  echo -n "Enter the names of the Ethernet ports (space-separated): "
+  read -r ethernet_ports
 
-# Prompt for DHCP configuration for the primary interface
-echo "Configure $primary_iface for DHCP? (y/n)"
-read -r dhcp_primary
+  # Prompt for bridge IP address
+  echo -n "Enter the IP address for the bridge (e.g., 192.168.50.152/24): "
+  read -r bridge_ip
 
-# Configure the primary interface for DHCP if selected
-if [[ $dhcp_primary =~ ^[Yy]$ ]]; then
-    echo -e "auto $primary_iface\niface $primary_iface inet dhcp\n" >> /etc/network/interfaces
+  # Prompt for static route
+  echo -n "Enter the network IP address and gateway for the static route (e.g., 192.168.50.0/24 192.168.50.1): "
+  read -r network_route gateway_route
+
+  # Install OVS
+  apt-get update
+  apt-get install -y openvswitch-switch
+
+  # Create bridge
+  ovs-vsctl add-br br0
+
+  # Add Ethernet ports to the bridge
+  for port in $ethernet_ports; do
+    ovs-vsctl add-port br0 "$port"
+  done
+
+  # Disable IP configuration on the Ethernet ports
+  for port in $ethernet_ports; do
+    ip addr flush "$port"
+  done
+
+  # Enable the bridge
+  ip link set br0 up
+
+  # Configure IP address for the bridge
+  ip addr add "$bridge_ip" dev br0
+
+  # Enable IP forwarding
+  sysctl net.ipv4.ip_forward=1
+
+  # Configure static routes
+  ip route add "$network_route" via "$gateway_route" dev br0
+
+  # Update network configuration file
+  echo "auto br0" >> /etc/network/interfaces
+  echo "iface br0 inet static" >> /etc/network/interfaces
+  echo "  address $(echo "$bridge_ip" | cut -d'/' -f1)" >> /etc/network/interfaces
+  echo "  netmask $(echo "$bridge_ip" | cut -d'/' -f2)" >> /etc/network/interfaces
+  echo "  gateway $gateway_route" >> /etc/network/interfaces
+
+  # Restart networking services
+  systemctl restart networking
+
+  echo "Open vSwitch configuration completed."
 else
-    echo -e "auto $primary_iface\niface $primary_iface inet manual\n" >> /etc/network/interfaces
-    echo "up ip link set dev \$IFACE up" >> /etc/network/interfaces
+  echo "Skipping Open vSwitch installation and configuration."
 fi
-
-# Configure additional interfaces
-for iface in $additional_ifaces; do
-    echo -e "auto $iface\niface $iface inet manual\nup ip link set dev \$IFACE up\n" >> /etc/network/interfaces
-done
-
-# Restart networking service
-systemctl restart networking
-
-# Set up Open vSwitch
-ovs-vsctl add-br br0
-ovs-vsctl add-port br0 $primary_iface
-
-# Add additional interfaces to the bridge
-for iface in $additional_ifaces; do
-    ovs-vsctl add-port br0 $iface
-done
-
-# Restart networking service to apply Open vSwitch changes
-systemctl restart networking
